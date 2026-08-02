@@ -13,14 +13,6 @@ load_dotenv()
 
 app = FastAPI(title="Preflight - Startup Systems Check API")
 
-# Enable CORS so the React frontend (running on a different port) can call this API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 def get_db_connection():
     return psycopg2.connect(
@@ -30,6 +22,95 @@ def get_db_connection():
         host=os.getenv("DB_HOST", "localhost"),
         port=os.getenv("DB_PORT", "5432"),
     )
+
+
+@app.on_event("startup")
+def create_tables():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS projects (
+        id SERIAL PRIMARY KEY, startup_name VARCHAR(255) NOT NULL, industry VARCHAR(100),
+        business_model VARCHAR(100), target_market VARCHAR(100), budget VARCHAR(50),
+        description TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS analyses (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        sector_growth VARCHAR(20), overall_risk NUMERIC(5,2), market_risk NUMERIC(5,2),
+        capital_risk NUMERIC(5,2), execution_risk NUMERIC(5,2), competition_risk NUMERIC(5,2),
+        regulatory_risk NUMERIC(5,2), success_probability NUMERIC(5,2), failure_probability NUMERIC(5,2),
+        revenue_projection JSONB, positioning_summary TEXT, audience_profile TEXT,
+        market_maturity VARCHAR(20), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS market_sizing (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        tam NUMERIC(18,2), sam NUMERIC(18,2), som NUMERIC(18,2), methodology_notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS market_trends (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        trend VARCHAR(150), description TEXT, impact VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS customer_segments (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        segment VARCHAR(150), description TEXT, percentage NUMERIC(5,2),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS competitors (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        competitor_name VARCHAR(150), market_share_estimate NUMERIC(5,2), positioning_notes TEXT,
+        funding_stage VARCHAR(50), threat_level VARCHAR(20), strengths JSONB, weaknesses JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS risk_mitigations (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        category VARCHAR(50), mitigation TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS recommendations (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        category VARCHAR(20), recommendation_text TEXT, priority VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS action_plan (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        phase VARCHAR(30), focus TEXT, actions JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS adoption_distribution (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        segment VARCHAR(50), percentage NUMERIC(5,2), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS market_growth_history (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        year INT, market_size NUMERIC(18,2), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS industry_challenges (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        challenge VARCHAR(200), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS growth_potential (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        score NUMERIC(5,2), explanation TEXT, market_validation NUMERIC(5,2),
+        competitive_position NUMERIC(5,2), financial_model NUMERIC(5,2), technical_readiness NUMERIC(5,2),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS market_opportunities (
+        id SERIAL PRIMARY KEY, project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+        opportunity VARCHAR(200), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# Enable CORS so the React frontend (running on a different port) can call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class StartupSubmission(BaseModel):
@@ -70,9 +151,6 @@ async def analyze_project(data: StartupSubmission):
         conn.close()
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set in the environment")
 
-    # Using the official google-genai SDK (not the LangChain wrapper) because
-    # it has proper support for the newer "AQ." Auth-key format that Google
-    # started issuing to all new API keys in 2026.
     client = genai.Client(api_key=api_key)
 
     prompt = f"""
@@ -429,8 +507,6 @@ async def analyze_project(data: StartupSubmission):
         conn.commit()
     except Exception as e:
         conn.rollback()
-        # Don't fail the whole request just because the cache-write failed;
-        # the founder still gets their analysis back.
         print(f"Warning: failed to persist analysis: {e}")
     finally:
         cur.close()
